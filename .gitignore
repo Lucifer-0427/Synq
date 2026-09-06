@@ -1,6 +1,7 @@
 node_modules/
 .env
 .vercel
+db.local.json
 tracks-cache.json
 playlists.json
 playlists.local-backup.json

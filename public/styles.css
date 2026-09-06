@@ -103,9 +103,7 @@ button{ font-family:inherit; }
     transform: translateX(-100%); transition: transform .28s cubic-bezier(.32,.72,0,1);
   }
   .sidebar.mobile-open{ transform: translateX(0); }
-  .sidebar-mobile-head{ display:flex; }
   .queue-drawer{ position:fixed; inset:0; z-index:290; }
-  .mobile-nav{ display:flex; }
 }
 
 @media (min-width: 901px){
@@ -466,3 +464,39 @@ input[type="range"]::-moz-range-thumb{
 .np-body .icon-btn .icon{ width:20px; height:20px; }
 .np-body .btn.round{ width:56px; height:56px; }
 .np-body .btn.round .icon{ width:22px; height:22px; }
+
+/* These two must win over the earlier (source-order-wise) base rules that
+   set display:none for desktop, so they're declared last on purpose. */
+@media (max-width: 900px){
+  .mobile-nav{ display:flex; }
+  .sidebar-mobile-head{ display:flex; }
+}
+
+/* ---------- Auth screen (sign up / log in) ---------- */
+.auth-screen{
+  position:fixed; inset:0; z-index:500;
+  display:flex; align-items:center; justify-content:center;
+  padding:24px;
+}
+.auth-card{
+  position:relative; z-index:1; width:min(380px, 100%);
+  background:var(--panel-solid); border:1px solid var(--border); border-radius:var(--radius);
+  padding:32px 28px; box-shadow:var(--shadow); backdrop-filter: blur(30px);
+}
+.auth-card .brand{ font-size:1.3rem; margin-bottom:6px; }
+.auth-card .logo-dot{ width:14px; height:14px; }
+.auth-tagline{ text-align:center; margin:0 0 22px; }
+.auth-tabs{
+  display:flex; background:rgba(255,255,255,.06); border-radius:12px; padding:4px; margin-bottom:20px;
+}
+.auth-tab{
+  flex:1; border:none; background:none; color:var(--muted); font-weight:700; font-size:.88rem;
+  padding:.55rem 0; border-radius:9px; cursor:pointer; transition: background .15s ease, color .15s ease;
+}
+.auth-tab.active{ background:rgba(255,255,255,.1); color:var(--text); }
+#auth-form{ display:flex; flex-direction:column; gap:10px; }
+.auth-submit{ width:100%; justify-content:center; margin-top:6px; }
+.auth-error{
+  color:#ffb3ae; background:rgba(255,95,87,.12); border:1px solid rgba(255,95,87,.35);
+  border-radius:10px; padding:.6rem .75rem; font-size:.84rem;
+}

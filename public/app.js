@@ -2,8 +2,10 @@
 
 // ===================== State =====================
 const state = {
+  user: null,              // { id, name, email } once logged in
   tracksById: new Map(),   // every track we've seen (search results, recent, playlist tracks)
   playlists: [],           // [{id,name,count}]
+  recent: [],              // this account's recently-played, kept in sync with the server
 
   viewKind: "search",      // "search" | "recent" | a playlist id (starts with "pl_")
   rawView: [],
@@ -14,8 +16,6 @@ const state = {
   shuffle: false,
   repeat: "off",            // "off" | "all" | "one"
 };
-
-const RECENT_KEY = "synq_recent_v1";
 
 // ===================== Icons (inline SVG, Feather-style) =====================
 const ICONS = {
@@ -180,6 +180,11 @@ async function api(path, opts = {}) {
     headers: opts.body ? { "Content-Type": "application/json" } : undefined,
     ...opts,
   });
+  if (res.status === 401 && path !== "/api/auth/me" && !path.startsWith("/api/auth/")) {
+    // Session missing/expired — drop back to the login screen instead of
+    // leaving the app stuck showing a generic error toast.
+    showAuthScreen();
+  }
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
     try {
@@ -232,16 +237,22 @@ function closeConfirm(result) {
   if (confirmResolve) { confirmResolve(result); confirmResolve = null; }
 }
 
-// ===================== Recently played (localStorage) =====================
+// ===================== Recently played (per-account, server-backed) =====================
+// Kept as an in-memory cache (state.recent) so every call site can read it
+// synchronously like before; updated optimistically here and persisted to
+// the account's own server-side list in the background.
 function getRecent() {
-  try { return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); } catch { return []; }
+  return state.recent;
 }
 function pushRecent(t) {
-  try {
-    let list = getRecent().filter((x) => x.id !== t.id);
-    list.unshift({ id: t.id, title: t.title, artist: t.artist, thumbnail: t.thumbnail, duration: t.duration });
-    localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 40)));
-  } catch { /* storage unavailable — not critical */ }
+  state.recent = state.recent.filter((x) => x.id !== t.id);
+  state.recent.unshift({ id: t.id, title: t.title, artist: t.artist, thumbnail: t.thumbnail, duration: t.duration });
+  state.recent = state.recent.slice(0, 40);
+  api("/api/recent", { method: "POST", body: JSON.stringify({ track: t }) }).catch(() => { /* best-effort */ });
+}
+async function clearRecent() {
+  state.recent = [];
+  await api("/api/recent", { method: "DELETE" });
 }
 
 // ===================== Playlists =====================
@@ -329,6 +340,31 @@ function renderHome() {
       handleSearchSubmit(chip.dataset.q);
     });
   });
+
+  loadSuggestions(); // fire-and-forget — pops in once the server responds
+}
+
+async function loadSuggestions() {
+  const el = $("home-suggested");
+  el.innerHTML = `<div class="home-empty-hint">Loading suggestions…</div>`;
+  try {
+    const d = await api("/api/recommendations");
+    const tracks = d.tracks || [];
+    if (!tracks.length) {
+      el.innerHTML = `<div class="home-empty-hint">Play a few songs and we'll start suggesting more here.</div>`;
+      return;
+    }
+    tracks.forEach((t) => state.tracksById.set(t.id, t));
+    el.innerHTML = tracks.map((t) => homeCardHtml(t.id, t.title, t.artist, t.thumbnail)).join("");
+    el.querySelectorAll(".home-card").forEach((card) => {
+      card.addEventListener("click", () => {
+        const t = tracks.find((x) => x.id === card.dataset.id);
+        if (t) buildQueueFrom(tracks, t.id);
+      });
+    });
+  } catch {
+    el.innerHTML = `<div class="home-empty-hint">Couldn't load suggestions right now.</div>`;
+  }
 }
 
 function selectSearch() {
@@ -857,6 +893,8 @@ function closeSettingsModal() { $("settings-modal").classList.add("hide"); }
 async function populateSettings() {
   const apikeyBadge = $("settings-apikey");
   const storageBadge = $("settings-storage");
+  const userBadge = $("settings-user");
+  userBadge.textContent = state.user ? (state.user.name || state.user.email) : "—";
   apikeyBadge.textContent = "Checking…"; apikeyBadge.className = "badge";
   storageBadge.textContent = "Checking…"; storageBadge.className = "badge";
   try {
@@ -875,11 +913,21 @@ function wireSettingsModal() {
   $("btn-settings").addEventListener("click", openSettingsModal);
   $("settings-close").addEventListener("click", closeSettingsModal);
   $("settings-modal").addEventListener("click", (e) => { if (e.target.id === "settings-modal") closeSettingsModal(); });
-  $("settings-clear-recent").addEventListener("click", () => {
-    try { localStorage.removeItem(RECENT_KEY); } catch { /* storage unavailable */ }
-    showToast("Cleared recently played");
-    if (state.viewKind === "recent") selectRecent();
-    if (state.viewKind === "home") renderHome();
+  $("settings-clear-recent").addEventListener("click", async () => {
+    try {
+      await clearRecent();
+      showToast("Cleared recently played");
+      if (state.viewKind === "recent") selectRecent();
+      if (state.viewKind === "home") renderHome();
+    } catch (e) {
+      showToast(e.message, true);
+    }
+  });
+  $("settings-logout").addEventListener("click", async () => {
+    try { await api("/api/auth/logout", { method: "POST" }); } catch { /* best-effort */ }
+    state.user = null;
+    closeSettingsModal();
+    showAuthScreen();
   });
 }
 
@@ -1027,6 +1075,79 @@ function wirePlayerControls() {
   });
 }
 
+// ===================== Auth screen (sign up / log in) =====================
+function showAuthScreen() {
+  state.user = null;
+  document.querySelector(".app").classList.add("hide");
+  $("auth-screen").classList.remove("hide");
+}
+
+async function enterApp(user) {
+  state.user = user;
+  $("auth-screen").classList.add("hide");
+  document.querySelector(".app").classList.remove("hide");
+  selectHome();
+  try {
+    state.recent = (await api("/api/recent")).tracks || [];
+  } catch {
+    state.recent = [];
+  }
+  try {
+    await fetchPlaylists();
+  } catch (e) {
+    showToast("Failed to load playlists: " + e.message, true);
+  }
+  if (state.viewKind === "home") renderHome();
+}
+
+async function checkAuth() {
+  try {
+    const d = await api("/api/auth/me");
+    if (d && d.user) { await enterApp(d.user); return; }
+  } catch { /* fall through to the login screen */ }
+  showAuthScreen();
+}
+
+function wireAuthScreen() {
+  let mode = "login";
+  const nameField = $("auth-name");
+  const errEl = $("auth-error");
+
+  function setMode(m) {
+    mode = m;
+    $("auth-tab-login").classList.toggle("active", m === "login");
+    $("auth-tab-signup").classList.toggle("active", m === "signup");
+    nameField.classList.toggle("hide", m === "login");
+    $("auth-submit").textContent = m === "login" ? "Log in" : "Sign up";
+    $("auth-password").setAttribute("autocomplete", m === "login" ? "current-password" : "new-password");
+    errEl.classList.add("hide");
+  }
+  $("auth-tab-login").addEventListener("click", () => setMode("login"));
+  $("auth-tab-signup").addEventListener("click", () => setMode("signup"));
+
+  $("auth-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const email = $("auth-email").value.trim();
+    const password = $("auth-password").value;
+    const name = nameField.value.trim();
+    errEl.classList.add("hide");
+    const btn = $("auth-submit");
+    btn.disabled = true;
+    try {
+      const path = mode === "login" ? "/api/auth/login" : "/api/auth/signup";
+      const body = mode === "login" ? { email, password } : { email, password, name };
+      const d = await api(path, { method: "POST", body: JSON.stringify(body) });
+      $("auth-form").reset();
+      await enterApp(d.user);
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove("hide");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 // ===================== Boot =====================
 window.addEventListener("DOMContentLoaded", async () => {
   wirePlayerControls();
@@ -1037,11 +1158,6 @@ window.addEventListener("DOMContentLoaded", async () => {
   wireMobileNav();
   wireSettingsModal();
   wireNowPlayingSheet();
-  selectHome();
-  try {
-    await fetchPlaylists();
-    if (state.viewKind === "home") renderHome();
-  } catch (e) {
-    showToast("Failed to load playlists: " + e.message, true);
-  }
+  wireAuthScreen();
+  await checkAuth();
 });

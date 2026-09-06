@@ -1,23 +1,28 @@
-// server.js — Synq (CommonJS, Express) — YouTube-powered music player
+// server.js — Synq (CommonJS, Express) — YouTube-powered music player, now
+// with per-friend accounts.
 //
 // No local audio files: search, browse, and play come from YouTube's Data
-// API + IFrame Player. This file only ever proxies search/lookup calls
-// (keeping the API key server-side) and manages playlists (which just
-// store YouTube video ids) plus a small metadata cache so playlist/queue
-// views don't need to re-hit the API for tracks you've already seen.
+// API + IFrame Player. This file proxies search/lookup calls (keeping the
+// API key server-side), manages playlists + a small metadata cache, handles
+// sign-up/login sessions, and keeps each account's playlists and recently-
+// played separate so every friend gets their own library and their own
+// "suggested for you" row.
 //
 // Deliberately CommonJS: this project can end up inside a cloud-synced
 // folder (OneDrive/Dropbox/etc.), and Node's ESM resolver does far more
 // filesystem round-trips per `import` than `require()` does, which gets
 // very slow on those mounts.
 //
-// Storage: locally (`npm start`) this reads/writes playlists.json and
-// tracks-cache.json straight off disk. Deployed on Vercel, functions have
-// no writable persistent disk, so if an Upstash Redis integration is
-// configured (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN env vars —
-// added automatically by the Vercel Marketplace integration), the exact
-// same data is kept there instead. Every call site awaits these, so the
-// switch is invisible to the route handlers below.
+// Storage: locally (`npm start`) this reads/writes a single db.local.json
+// file straight off disk. Deployed on Vercel, functions have no writable
+// persistent disk, so if an Upstash Redis integration is configured
+// (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN env vars — added
+// automatically by the Vercel Marketplace integration), the exact same data
+// is kept there instead. Every call site awaits these, so the switch is
+// invisible to the route handlers below. Accounts genuinely need this to be
+// Redis in production — local-file storage on Vercel doesn't survive
+// between deploys (or even between cold starts), so friends would get
+// logged out / lose playlists constantly without it.
 
 try { process.loadEnvFile(); } catch { /* no .env yet — that's fine, /api/search will explain */ }
 
@@ -26,15 +31,21 @@ const fs = require("fs");
 const path = require("path");
 const cors = require("cors");
 const os = require("os");
+const crypto = require("crypto");
+const cookieParser = require("cookie-parser");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.YOUTUBE_API_KEY || "";
+const JWT_SECRET = process.env.JWT_SECRET || "";
+const COOKIE_NAME = "synq_session";
+const SESSION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
-const PLAYLISTS_PATH = path.join(ROOT, "playlists.json");
-const CACHE_PATH = path.join(ROOT, "tracks-cache.json");
+const DB_PATH = path.join(ROOT, "db.local.json");
 
 // ---------- Redis (optional — only used when configured) ----------
 let redis = null;
@@ -43,11 +54,11 @@ if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) 
     const { Redis } = require("@upstash/redis");
     redis = Redis.fromEnv();
   } catch {
-    console.warn("UPSTASH_REDIS_REST_URL is set but the @upstash/redis package isn't installed — run `npm install @upstash/redis`. Falling back to local file storage for now.");
+    console.warn("UPSTASH_REDIS_REST_URL is set but the @upstash/redis package isn't installed — run `npm install`. Falling back to local file storage for now.");
   }
 }
 
-// ---------- Playlist + cache storage ----------
+// ---------- Generic key/value storage (redis, or one local JSON file) ----------
 function loadJson(file, fallback) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf-8"));
@@ -58,43 +69,154 @@ function loadJson(file, fallback) {
 function saveJson(file, data) {
   // Best-effort: on Vercel without the Redis integration connected yet, the
   // filesystem is read-only and this throws (EROFS). Search/playback still
-  // work fine without it — only playlist persistence and the metadata cache
-  // are affected — so this shouldn't take down the whole request.
+  // work fine without it — only accounts/playlists/cache persistence is
+  // affected — so this shouldn't take down the whole request.
   try {
     fs.writeFileSync(file, JSON.stringify(data, null, 2));
   } catch (e) {
     console.warn(`Couldn't persist ${path.basename(file)} (${e.code || e.message}) — add the Upstash Redis integration on Vercel for real persistence.`);
   }
 }
-async function loadPlaylists() {
-  if (redis) return (await redis.get("synq:playlists")) || { playlists: [] };
-  return loadJson(PLAYLISTS_PATH, { playlists: [] });
+function loadLocalDb() { return loadJson(DB_PATH, {}); }
+function saveLocalDb(db) { saveJson(DB_PATH, db); }
+
+async function dbGet(key, fallback) {
+  if (redis) {
+    const v = await redis.get(key);
+    return v == null ? fallback : v;
+  }
+  const db = loadLocalDb();
+  return key in db ? db[key] : fallback;
 }
-async function savePlaylists(data) {
-  if (redis) return void (await redis.set("synq:playlists", data));
-  saveJson(PLAYLISTS_PATH, data);
+async function dbSet(key, value) {
+  if (redis) return void (await redis.set(key, value));
+  const db = loadLocalDb();
+  db[key] = value;
+  saveLocalDb(db);
 }
-async function loadCache() {
-  if (redis) return (await redis.get("synq:cache")) || {};
-  return loadJson(CACHE_PATH, {});
-}
+
+// ---------- Users ----------
+async function loadUsers() { return dbGet("synq:users", {}); } // { [email]: user }
+async function saveUsers(users) { return dbSet("synq:users", users); }
+
+// ---------- Per-user playlists ----------
+async function loadPlaylists(uid) { return dbGet(`synq:playlists:${uid}`, { playlists: [] }); }
+async function savePlaylists(uid, data) { return dbSet(`synq:playlists:${uid}`, data); }
+
+// ---------- Per-user recently played ----------
+async function loadRecent(uid) { return dbGet(`synq:recent:${uid}`, []); }
+async function saveRecent(uid, list) { return dbSet(`synq:recent:${uid}`, list); }
+
+// ---------- Shared video metadata cache (not user-specific) ----------
+async function loadCache() { return dbGet("synq:cache", {}); }
 async function upsertCache(tracks) {
   const cache = await loadCache();
   for (const t of tracks) cache[t.id] = t;
-  if (redis) return void (await redis.set("synq:cache", cache));
-  saveJson(CACHE_PATH, cache);
+  await dbSet("synq:cache", cache);
 }
+
 function newId() {
   return "pl_" + Math.random().toString(36).slice(2, 10);
+}
+
+// ---------- Auth helpers ----------
+function getJwtSecret() {
+  if (!JWT_SECRET) {
+    const err = new Error("Server isn't configured for accounts yet — add a JWT_SECRET (any long random string) to the environment and redeploy/restart.");
+    err.status = 500;
+    throw err;
+  }
+  return JWT_SECRET;
+}
+function issueSession(res, user) {
+  const token = jwt.sign({ uid: user.id, name: user.name, email: user.email }, getJwtSecret(), { expiresIn: "30d" });
+  res.cookie(COOKIE_NAME, token, {
+    httpOnly: true,
+    secure: !!process.env.VERCEL, // https in production, plain http is fine for local dev
+    sameSite: "lax",
+    maxAge: SESSION_MS,
+    path: "/",
+  });
+}
+function getUserFromReq(req) {
+  const token = req.cookies?.[COOKIE_NAME];
+  if (!token || !JWT_SECRET) return null;
+  try {
+    return jwt.verify(token, JWT_SECRET);
+  } catch {
+    return null;
+  }
+}
+function authMiddleware(req, res, next) {
+  const user = getUserFromReq(req);
+  if (!user) return res.status(401).json({ error: "Please log in." });
+  req.user = user; // { uid, name, email }
+  next();
 }
 
 // ---------- Middleware ----------
 app.use(cors());
 app.use(express.json());
+app.use(cookieParser());
 app.use(express.static(PUBLIC_DIR));
 app.use((req, _res, next) => {
   console.log(new Date().toISOString(), req.method, req.url);
   next();
+});
+
+// ---------- Auth routes ----------
+app.get("/api/auth/me", (req, res) => {
+  const user = getUserFromReq(req);
+  res.json({ user: user ? { id: user.uid, name: user.name, email: user.email } : null });
+});
+
+app.post("/api/auth/signup", async (req, res) => {
+  try {
+    getJwtSecret(); // fail fast with a clear message if accounts aren't configured
+    const name = String(req.body?.name || "").trim();
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const password = String(req.body?.password || "");
+    if (!name) return res.status(400).json({ error: "Name is required" });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: "Enter a valid email address" });
+    if (password.length < 6) return res.status(400).json({ error: "Password must be at least 6 characters" });
+
+    const users = await loadUsers();
+    if (users[email]) return res.status(409).json({ error: "An account with that email already exists" });
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const user = { id: crypto.randomUUID(), name, email, passwordHash, createdAt: Date.now() };
+    users[email] = user;
+    await saveUsers(users);
+
+    issueSession(res, user);
+    res.status(201).json({ user: { id: user.id, name: user.name, email: user.email } });
+  } catch (e) {
+    console.error(e);
+    res.status(e.status || 500).json({ error: e.message || "Sign up failed" });
+  }
+});
+
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    getJwtSecret();
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const password = String(req.body?.password || "");
+    const users = await loadUsers();
+    const user = users[email];
+    if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+      return res.status(401).json({ error: "Incorrect email or password" });
+    }
+    issueSession(res, user);
+    res.json({ user: { id: user.id, name: user.name, email: user.email } });
+  } catch (e) {
+    console.error(e);
+    res.status(e.status || 500).json({ error: e.message || "Log in failed" });
+  }
+});
+
+app.post("/api/auth/logout", (_req, res) => {
+  res.clearCookie(COOKIE_NAME, { path: "/" });
+  res.json({ ok: true });
 });
 
 // ---------- YouTube helpers ----------
@@ -172,8 +294,8 @@ async function normalizeVideos(items) {
   }));
 }
 
-// ---------- Search / lookup ----------
-app.get("/api/search", async (req, res) => {
+// ---------- Search / lookup (require login — keeps the API quota within your friend group) ----------
+app.get("/api/search", authMiddleware, async (req, res) => {
   try {
     const q = String(req.query.q || "").trim();
     if (!q) return res.status(400).json({ error: "q required" });
@@ -195,7 +317,7 @@ app.get("/api/search", async (req, res) => {
   }
 });
 
-app.get("/api/track/:id", async (req, res) => {
+app.get("/api/track/:id", authMiddleware, async (req, res) => {
   try {
     const id = req.params.id;
     const cache = await loadCache();
@@ -212,7 +334,7 @@ app.get("/api/track/:id", async (req, res) => {
 });
 
 // Resolve a pasted link/id/search term into a track (used by "paste a link" box)
-app.post("/api/resolve", async (req, res) => {
+app.post("/api/resolve", authMiddleware, async (req, res) => {
   try {
     const input = String(req.body?.input || "").trim();
     const videoId = extractVideoId(input);
@@ -231,8 +353,8 @@ app.post("/api/resolve", async (req, res) => {
   }
 });
 
-// Import an entire YouTube playlist into a new local Synq playlist
-app.post("/api/import-playlist", async (req, res) => {
+// Import an entire YouTube playlist into a new Synq playlist (for the logged-in user)
+app.post("/api/import-playlist", authMiddleware, async (req, res) => {
   try {
     const input = String(req.body?.url || "").trim();
     const playlistId = extractPlaylistId(input);
@@ -240,7 +362,6 @@ app.post("/api/import-playlist", async (req, res) => {
 
     let items = [];
     let pageToken = "";
-    let title = "Imported playlist";
     for (let page = 0; page < 10; page++) { // cap at ~500 items
       const data = await ytFetch("playlistItems", {
         part: "snippet",
@@ -266,12 +387,10 @@ app.post("/api/import-playlist", async (req, res) => {
     }
     await upsertCache(tracks);
 
-    if (items[0]?.snippet?.title) title = "Imported: " + items[0].snippet.title.split(" - ")[0];
-
-    const data = await loadPlaylists();
+    const data = await loadPlaylists(req.user.uid);
     const p = { id: newId(), name: `Imported playlist (${tracks.length})`, tracks: tracks.map((t) => t.id) };
     data.playlists.push(p);
-    await savePlaylists(data);
+    await savePlaylists(req.user.uid, data);
 
     res.status(201).json(p);
   } catch (e) {
@@ -280,10 +399,10 @@ app.post("/api/import-playlist", async (req, res) => {
   }
 });
 
-// ---------- Playlist APIs ----------
-app.get("/api/playlists", async (_req, res) => {
+// ---------- Playlist APIs (per logged-in user) ----------
+app.get("/api/playlists", authMiddleware, async (req, res) => {
   try {
-    const data = await loadPlaylists();
+    const data = await loadPlaylists(req.user.uid);
     res.json({ playlists: data.playlists.map((p) => ({ id: p.id, name: p.name, count: p.tracks.length })) });
   } catch (e) {
     console.error(e);
@@ -291,14 +410,14 @@ app.get("/api/playlists", async (_req, res) => {
   }
 });
 
-app.post("/api/playlists", async (req, res) => {
+app.post("/api/playlists", authMiddleware, async (req, res) => {
   try {
     const name = String(req.body?.name || "").trim();
     if (!name) return res.status(400).json({ error: "Name required" });
-    const data = await loadPlaylists();
+    const data = await loadPlaylists(req.user.uid);
     const p = { id: newId(), name, tracks: [] };
     data.playlists.push(p);
-    await savePlaylists(data);
+    await savePlaylists(req.user.uid, data);
     res.status(201).json(p);
   } catch (e) {
     console.error(e);
@@ -306,15 +425,15 @@ app.post("/api/playlists", async (req, res) => {
   }
 });
 
-app.put("/api/playlists/:pid", async (req, res) => {
+app.put("/api/playlists/:pid", authMiddleware, async (req, res) => {
   try {
-    const data = await loadPlaylists();
+    const data = await loadPlaylists(req.user.uid);
     const p = data.playlists.find((x) => x.id === req.params.pid);
     if (!p) return res.status(404).json({ error: "Not found" });
     const name = String(req.body?.name || "").trim();
     if (!name) return res.status(400).json({ error: "Name required" });
     p.name = name;
-    await savePlaylists(data);
+    await savePlaylists(req.user.uid, data);
     res.json(p);
   } catch (e) {
     console.error(e);
@@ -322,13 +441,13 @@ app.put("/api/playlists/:pid", async (req, res) => {
   }
 });
 
-app.delete("/api/playlists/:pid", async (req, res) => {
+app.delete("/api/playlists/:pid", authMiddleware, async (req, res) => {
   try {
-    const data = await loadPlaylists();
+    const data = await loadPlaylists(req.user.uid);
     const i = data.playlists.findIndex((x) => x.id === req.params.pid);
     if (i === -1) return res.status(404).json({ error: "Not found" });
     const removed = data.playlists.splice(i, 1)[0];
-    await savePlaylists(data);
+    await savePlaylists(req.user.uid, data);
     res.json(removed);
   } catch (e) {
     console.error(e);
@@ -336,7 +455,7 @@ app.delete("/api/playlists/:pid", async (req, res) => {
   }
 });
 
-app.post("/api/playlists/:pid/tracks", async (req, res) => {
+app.post("/api/playlists/:pid/tracks", authMiddleware, async (req, res) => {
   try {
     const trackId = String(req.body?.trackId || "");
     if (!trackId) return res.status(400).json({ error: "trackId required" });
@@ -345,11 +464,11 @@ app.post("/api/playlists/:pid/tracks", async (req, res) => {
     const cache = await loadCache();
     if (!cache[trackId] && req.body?.meta) await upsertCache([{ id: trackId, ...req.body.meta }]);
 
-    const data = await loadPlaylists();
+    const data = await loadPlaylists(req.user.uid);
     const p = data.playlists.find((x) => x.id === req.params.pid);
     if (!p) return res.status(404).json({ error: "Playlist not found" });
     if (!p.tracks.includes(trackId)) p.tracks.push(trackId);
-    await savePlaylists(data);
+    await savePlaylists(req.user.uid, data);
     res.json({ ok: true, tracks: p.tracks });
   } catch (e) {
     console.error(e);
@@ -357,14 +476,14 @@ app.post("/api/playlists/:pid/tracks", async (req, res) => {
   }
 });
 
-app.delete("/api/playlists/:pid/tracks", async (req, res) => {
+app.delete("/api/playlists/:pid/tracks", authMiddleware, async (req, res) => {
   try {
     const trackId = String(req.body?.trackId || "");
-    const data = await loadPlaylists();
+    const data = await loadPlaylists(req.user.uid);
     const p = data.playlists.find((x) => x.id === req.params.pid);
     if (!p) return res.status(404).json({ error: "Playlist not found" });
     p.tracks = p.tracks.filter((id) => id !== trackId);
-    await savePlaylists(data);
+    await savePlaylists(req.user.uid, data);
     res.json({ ok: true, tracks: p.tracks });
   } catch (e) {
     console.error(e);
@@ -372,18 +491,18 @@ app.delete("/api/playlists/:pid/tracks", async (req, res) => {
   }
 });
 
-app.put("/api/playlists/:pid/order", async (req, res) => {
+app.put("/api/playlists/:pid/order", authMiddleware, async (req, res) => {
   try {
     const order = Array.isArray(req.body?.trackIds) ? req.body.trackIds : null;
     if (!order) return res.status(400).json({ error: "trackIds array required" });
-    const data = await loadPlaylists();
+    const data = await loadPlaylists(req.user.uid);
     const p = data.playlists.find((x) => x.id === req.params.pid);
     if (!p) return res.status(404).json({ error: "Playlist not found" });
     const existing = new Set(p.tracks);
     const reordered = order.filter((id) => existing.has(id));
     for (const id of p.tracks) if (!reordered.includes(id)) reordered.push(id);
     p.tracks = reordered;
-    await savePlaylists(data);
+    await savePlaylists(req.user.uid, data);
     res.json({ ok: true, tracks: p.tracks });
   } catch (e) {
     console.error(e);
@@ -391,9 +510,9 @@ app.put("/api/playlists/:pid/order", async (req, res) => {
   }
 });
 
-app.get("/api/playlists/:pid/tracks", async (req, res) => {
+app.get("/api/playlists/:pid/tracks", authMiddleware, async (req, res) => {
   try {
-    const data = await loadPlaylists();
+    const data = await loadPlaylists(req.user.uid);
     const p = data.playlists.find((x) => x.id === req.params.pid);
     if (!p) return res.status(404).json({ error: "Playlist not found" });
 
@@ -412,8 +531,86 @@ app.get("/api/playlists/:pid/tracks", async (req, res) => {
   }
 });
 
+// ---------- Recently played (per logged-in user) ----------
+app.get("/api/recent", authMiddleware, async (req, res) => {
+  try {
+    res.json({ tracks: await loadRecent(req.user.uid) });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Failed to load recently played" });
+  }
+});
+
+app.post("/api/recent", authMiddleware, async (req, res) => {
+  try {
+    const t = req.body?.track;
+    if (!t || !t.id) return res.status(400).json({ error: "track required" });
+    let list = await loadRecent(req.user.uid);
+    list = list.filter((x) => x.id !== t.id);
+    list.unshift({ id: t.id, title: t.title, artist: t.artist, thumbnail: t.thumbnail, duration: t.duration });
+    list = list.slice(0, 40);
+    await saveRecent(req.user.uid, list);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Failed to save recently played" });
+  }
+});
+
+app.delete("/api/recent", authMiddleware, async (req, res) => {
+  try {
+    await saveRecent(req.user.uid, []);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Failed to clear recently played" });
+  }
+});
+
+// ---------- Suggestions ("suggested for you", based on recently played artists) ----------
+app.get("/api/recommendations", authMiddleware, async (req, res) => {
+  try {
+    const recent = await loadRecent(req.user.uid);
+    if (!recent.length) return res.json({ tracks: [] });
+
+    const artists = [...new Set(recent.map((t) => t.artist).filter(Boolean))].slice(0, 2);
+    const excludeIds = new Set(recent.map((t) => t.id));
+    const seen = new Set();
+    const tracks = [];
+
+    for (const artist of artists) {
+      const search = await ytFetch("search", {
+        part: "snippet",
+        q: artist,
+        type: "video",
+        videoCategoryId: "10",
+        maxResults: "10",
+      });
+      const found = await normalizeVideos(search.items || []);
+      await upsertCache(found);
+      for (const t of found) {
+        if (excludeIds.has(t.id) || seen.has(t.id)) continue;
+        seen.add(t.id);
+        tracks.push(t);
+        if (tracks.length >= 12) break;
+      }
+      if (tracks.length >= 12) break;
+    }
+    res.json({ tracks });
+  } catch (e) {
+    console.error(e);
+    res.status(e.status || 500).json({ error: e.message || "Couldn't load suggestions" });
+  }
+});
+
 // ---------- Debug ----------
-app.get("/api/ping", (_req, res) => res.json({ ok: true, ts: Date.now(), hasApiKey: !!API_KEY, storage: redis ? "redis" : "file" }));
+app.get("/api/ping", (_req, res) => res.json({
+  ok: true,
+  ts: Date.now(),
+  hasApiKey: !!API_KEY,
+  hasAccounts: !!JWT_SECRET,
+  storage: redis ? "redis" : "file",
+}));
 
 // ---------- SPA fallback ----------
 app.use((_req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
@@ -457,7 +654,8 @@ if (require.main === module) {
       console.log("Couldn't detect a LAN IP — check `ipconfig` for your Wi-Fi adapter's IPv4 address.");
     }
     console.log(API_KEY ? "YouTube API key loaded." : "No YOUTUBE_API_KEY set — search will not work until you add one to .env");
-    console.log(redis ? "Using Upstash Redis for playlist/cache storage." : "Using local JSON files for playlist/cache storage.");
+    console.log(JWT_SECRET ? "Accounts enabled (JWT_SECRET set)." : "No JWT_SECRET set — sign up/login will fail until you add one to .env");
+    console.log(redis ? "Using Upstash Redis for storage." : "Using a local db.local.json file for storage.");
   });
 }
 

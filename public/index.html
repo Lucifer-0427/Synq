@@ -15,7 +15,30 @@
     <div id="backdrop-b" class="backdrop-layer"></div>
     <div class="backdrop-scrim"></div>
   </div>
-  <div class="app">
+  <div id="auth-screen" class="auth-screen">
+    <div class="auth-card">
+      <div class="brand" style="justify-content:center;">
+        <div class="logo-dot"></div>
+        <span>Synq</span>
+      </div>
+      <p class="muted small auth-tagline">Your own YouTube-powered music player.</p>
+
+      <div class="auth-tabs">
+        <button type="button" class="auth-tab active" id="auth-tab-login">Log in</button>
+        <button type="button" class="auth-tab" id="auth-tab-signup">Sign up</button>
+      </div>
+
+      <form id="auth-form">
+        <input id="auth-name" class="text-input hide" placeholder="Your name" autocomplete="name" />
+        <input id="auth-email" class="text-input" type="email" placeholder="Email" autocomplete="email" required />
+        <input id="auth-password" class="text-input" type="password" placeholder="Password" autocomplete="current-password" required />
+        <div id="auth-error" class="auth-error hide"></div>
+        <button type="submit" id="auth-submit" class="btn primary auth-submit">Log in</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="app hide">
     <header class="topbar">
       <div class="brand">
         <div class="logo-dot"></div>
@@ -71,6 +94,10 @@
           <section class="home-section">
             <div class="home-section-head">Recently played</div>
             <div id="home-recent" class="home-recent-row"></div>
+          </section>
+          <section class="home-section">
+            <div class="home-section-head">Suggested for you</div>
+            <div id="home-suggested" class="home-recent-row"></div>
           </section>
           <section class="home-section">
             <div class="home-section-head">Your playlists</div>
@@ -155,11 +182,13 @@
     <div class="modal">
       <div class="modal-head"><span>Settings</span><button class="icon-btn" id="settings-close" aria-label="Close"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button></div>
       <div class="settings-list">
+        <div class="settings-row"><span>Signed in as</span><span id="settings-user" class="badge">…</span></div>
         <div class="settings-row"><span>YouTube API key</span><span id="settings-apikey" class="badge">Checking…</span></div>
         <div class="settings-row"><span>Playlist storage</span><span id="settings-storage" class="badge">Checking…</span></div>
       </div>
-      <div class="modal-actions" style="justify-content:flex-start">
+      <div class="modal-actions" style="justify-content:flex-start; flex-wrap:wrap;">
         <button id="settings-clear-recent" class="btn danger">Clear recently played</button>
+        <button id="settings-logout" class="btn">Log out</button>
       </div>
       <p class="muted small">Synq searches, plays and caches metadata through YouTube's Data API — nothing is downloaded. Playlists are just saved lists of YouTube video ids.</p>
     </div>
