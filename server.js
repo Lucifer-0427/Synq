@@ -56,7 +56,15 @@ function loadJson(file, fallback) {
   }
 }
 function saveJson(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+  // Best-effort: on Vercel without the Redis integration connected yet, the
+  // filesystem is read-only and this throws (EROFS). Search/playback still
+  // work fine without it — only playlist persistence and the metadata cache
+  // are affected — so this shouldn't take down the whole request.
+  try {
+    fs.writeFileSync(file, JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.warn(`Couldn't persist ${path.basename(file)} (${e.code || e.message}) — add the Upstash Redis integration on Vercel for real persistence.`);
+  }
 }
 async function loadPlaylists() {
   if (redis) return (await redis.get("synq:playlists")) || { playlists: [] };
