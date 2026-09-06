@@ -253,9 +253,12 @@ async function fetchPlaylists() {
 
 // ===================== View management =====================
 function setActiveNav(kind) {
+  $("nav-home").classList.toggle("active", kind === "home");
   $("nav-search").classList.toggle("active", kind === "search");
   $("nav-recent").classList.toggle("active", kind === "recent");
   document.querySelectorAll(".playlist-row").forEach((r) => r.classList.toggle("active", r.dataset.id === kind));
+  $("mnav-home").classList.toggle("active", kind === "home");
+  $("mnav-search").classList.toggle("active", kind === "search");
 }
 
 function emptyStateTextFor(kind) {
@@ -264,7 +267,72 @@ function emptyStateTextFor(kind) {
   return "This playlist is empty — search for tracks and add them here.";
 }
 
+// Home is its own full view (separate from the track-table), so every other
+// view flips these two back before rendering its own list.
+function showTrackListUI() {
+  $("home-view").classList.add("hide");
+  $("track-table").classList.remove("hide");
+}
+
+function selectHome() {
+  state.viewKind = "home";
+  setActiveNav("home");
+  $("view-title").textContent = "Home";
+  $("view-count").textContent = "";
+  $("view-actions").classList.add("hide");
+  $("track-table").classList.add("hide");
+  $("empty-state").classList.add("hide");
+  $("home-view").classList.remove("hide");
+  renderHome();
+}
+
+function homeCardHtml(id, title, sub, thumb) {
+  return `
+    <div class="home-card" data-id="${id}">
+      ${thumb ? `<img class="home-card-art" src="${thumb}" alt="" loading="lazy" />` : `<div class="home-card-art">${ICONS.music}</div>`}
+      <div class="home-card-title">${escapeHtml(title)}</div>
+      <div class="home-card-sub">${escapeHtml(sub)}</div>
+    </div>
+  `;
+}
+
+const HOME_GENRES = ["Pop hits", "Hip-Hop", "Rock classics", "Chill lo-fi", "Workout mix", "Bollywood", "Throwback 2000s", "Jazz"];
+
+function renderHome() {
+  const recent = getRecent();
+  const recentEl = $("home-recent");
+  recentEl.innerHTML = recent.length
+    ? recent.slice(0, 12).map((t) => homeCardHtml(t.id, t.title, t.artist, t.thumbnail)).join("")
+    : `<div class="home-empty-hint">Nothing played yet — search for a song to get started.</div>`;
+  recentEl.querySelectorAll(".home-card").forEach((card) => {
+    card.addEventListener("click", () => {
+      const t = recent.find((x) => x.id === card.dataset.id);
+      if (!t) return;
+      state.tracksById.set(t.id, t);
+      buildQueueFrom(recent, t.id);
+    });
+  });
+
+  const plEl = $("home-playlists");
+  plEl.innerHTML = state.playlists.length
+    ? state.playlists.slice(0, 12).map((p) => homeCardHtml(p.id, p.name, `${p.count} track${p.count === 1 ? "" : "s"}`, null)).join("")
+    : `<div class="home-empty-hint">No playlists yet — create one from the sidebar.</div>`;
+  plEl.querySelectorAll(".home-card").forEach((card) => {
+    card.addEventListener("click", () => selectPlaylist(card.dataset.id));
+  });
+
+  const genresEl = $("home-genres");
+  genresEl.innerHTML = HOME_GENRES.map((g) => `<button class="home-chip" data-q="${escapeHtml(g)}">${escapeHtml(g)}</button>`).join("");
+  genresEl.querySelectorAll(".home-chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      $("search").value = chip.dataset.q;
+      handleSearchSubmit(chip.dataset.q);
+    });
+  });
+}
+
 function selectSearch() {
+  showTrackListUI();
   state.viewKind = "search";
   setActiveNav("search");
   $("view-title").textContent = "Search";
@@ -274,6 +342,7 @@ function selectSearch() {
 }
 
 function selectRecent() {
+  showTrackListUI();
   state.viewKind = "recent";
   setActiveNav("recent");
   $("view-title").textContent = "Recently played";
@@ -285,6 +354,7 @@ function selectRecent() {
 }
 
 async function selectPlaylist(pid) {
+  showTrackListUI();
   state.viewKind = pid;
   setActiveNav(pid);
   const pl = state.playlists.find((p) => p.id === pid);
@@ -305,6 +375,7 @@ async function selectPlaylist(pid) {
 async function handleSearchSubmit(raw) {
   const q = raw.trim();
   if (!q) return;
+  showTrackListUI();
   state.viewKind = "search";
   setActiveNav("search");
   $("view-title").textContent = `Searching for "${q}"…`;
@@ -353,6 +424,7 @@ function renderPlaylists() {
     row.addEventListener("click", (e) => {
       if (e.target.closest(".pl-actions")) return;
       selectPlaylist(p.id);
+      closeMobileSidebar();
     });
     row.querySelector(".pl-rename").addEventListener("click", (e) => { e.stopPropagation(); openRenamePlaylist(p); });
     row.querySelector(".pl-delete").addEventListener("click", (e) => { e.stopPropagation(); deletePlaylist(p); });
@@ -759,14 +831,107 @@ function wireVideoPanel() {
   });
 }
 
+// ===================== Mobile: library sheet =====================
+function openMobileSidebar() { $("sidebar").classList.add("mobile-open"); }
+function closeMobileSidebar() { $("sidebar").classList.remove("mobile-open"); }
+
+function wireMobileNav() {
+  $("mnav-home").addEventListener("click", () => { selectHome(); closeMobileSidebar(); });
+  $("mnav-search").addEventListener("click", () => {
+    selectSearch();
+    closeMobileSidebar();
+    setTimeout(() => $("search").focus(), 30);
+  });
+  $("mnav-library").addEventListener("click", openMobileSidebar);
+  $("mnav-settings").addEventListener("click", openSettingsModal);
+  $("sidebar-close").addEventListener("click", closeMobileSidebar);
+}
+
+// ===================== Settings modal =====================
+function openSettingsModal() {
+  $("settings-modal").classList.remove("hide");
+  populateSettings();
+}
+function closeSettingsModal() { $("settings-modal").classList.add("hide"); }
+
+async function populateSettings() {
+  const apikeyBadge = $("settings-apikey");
+  const storageBadge = $("settings-storage");
+  apikeyBadge.textContent = "Checking…"; apikeyBadge.className = "badge";
+  storageBadge.textContent = "Checking…"; storageBadge.className = "badge";
+  try {
+    const d = await api("/api/ping");
+    apikeyBadge.textContent = d.hasApiKey ? "Configured" : "Missing";
+    apikeyBadge.className = "badge " + (d.hasApiKey ? "good" : "warn");
+    storageBadge.textContent = d.storage === "redis" ? "Redis (persistent)" : "Local file (resets on restart)";
+    storageBadge.className = "badge " + (d.storage === "redis" ? "good" : "warn");
+  } catch {
+    apikeyBadge.textContent = "Unknown";
+    storageBadge.textContent = "Unknown";
+  }
+}
+
+function wireSettingsModal() {
+  $("btn-settings").addEventListener("click", openSettingsModal);
+  $("settings-close").addEventListener("click", closeSettingsModal);
+  $("settings-modal").addEventListener("click", (e) => { if (e.target.id === "settings-modal") closeSettingsModal(); });
+  $("settings-clear-recent").addEventListener("click", () => {
+    try { localStorage.removeItem(RECENT_KEY); } catch { /* storage unavailable */ }
+    showToast("Cleared recently played");
+    if (state.viewKind === "recent") selectRecent();
+    if (state.viewKind === "home") renderHome();
+  });
+}
+
+// ===================== Mobile: full-screen Now Playing sheet =====================
+// Re-parents the existing video-panel/pb-meta/pb-center nodes (with all their
+// wired-up listeners intact) from the compact player bar into the sheet, and
+// back again on collapse — avoids ever duplicating an id or a control.
+function wireNowPlayingSheet() {
+  const pbNow = document.querySelector(".pb-now");
+  const footer = document.querySelector(".player-bar");
+  const pbRight = document.querySelector(".pb-right");
+  const isMobile = () => window.matchMedia("(max-width: 900px)").matches;
+
+  function expandNowPlaying() {
+    if (!isMobile()) return;
+    const sheet = $("now-playing-sheet");
+    sheet.classList.remove("hide");
+    $("np-body").appendChild($("video-panel"));
+    $("np-body").appendChild($("pb-meta"));
+    $("np-body").appendChild($("pb-center"));
+    requestAnimationFrame(() => sheet.classList.add("open"));
+  }
+
+  function collapseNowPlaying() {
+    const sheet = $("now-playing-sheet");
+    sheet.classList.remove("open");
+    pbNow.insertBefore($("video-panel"), pbNow.firstChild);
+    pbNow.appendChild($("pb-meta"));
+    footer.insertBefore($("pb-center"), pbRight);
+    setTimeout(() => sheet.classList.add("hide"), 320);
+  }
+
+  pbNow.addEventListener("click", (e) => {
+    if (e.target.closest("#video-expand")) return;
+    expandNowPlaying();
+  });
+  $("np-collapse").addEventListener("click", collapseNowPlaying);
+  $("np-queue-btn").addEventListener("click", () => {
+    collapseNowPlaying();
+    $("btn-queue").click();
+  });
+}
+
 // ===================== Wiring =====================
 function wireTopLevel() {
   $("search-form").addEventListener("submit", (e) => {
     e.preventDefault();
     handleSearchSubmit($("search").value);
   });
-  $("nav-search").addEventListener("click", selectSearch);
-  $("nav-recent").addEventListener("click", selectRecent);
+  $("nav-home").addEventListener("click", () => { selectHome(); closeMobileSidebar(); });
+  $("nav-search").addEventListener("click", () => { selectSearch(); closeMobileSidebar(); });
+  $("nav-recent").addEventListener("click", () => { selectRecent(); closeMobileSidebar(); });
 
   $("btn-queue").addEventListener("click", () => {
     const drawer = $("queue-drawer");
@@ -869,9 +1034,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   wirePlaylistModals();
   wireVideoPanel();
   wireMediaSession();
-  selectSearch();
+  wireMobileNav();
+  wireSettingsModal();
+  wireNowPlayingSheet();
+  selectHome();
   try {
     await fetchPlaylists();
+    if (state.viewKind === "home") renderHome();
   } catch (e) {
     showToast("Failed to load playlists: " + e.message, true);
   }
