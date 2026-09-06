@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Synq | Music from YouTube</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="backdrop">
+    <div id="backdrop-a" class="backdrop-layer"></div>
+    <div id="backdrop-b" class="backdrop-layer"></div>
+    <div class="backdrop-scrim"></div>
+  </div>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo-dot"></div>
+        <span>Synq</span>
+      </div>
+      <form id="search-form" class="search-wrap">
+        <svg class="search-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+        </svg>
+        <input id="search" class="search" type="text" placeholder="Search YouTube, or paste a video/playlist link…" aria-label="Search" />
+      </form>
+      <div class="top-actions">
+        <button id="btn-import" class="btn"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg> Import playlist</button>
+      </div>
+    </header>
+
+    <div class="body">
+      <aside class="sidebar">
+        <nav class="nav">
+          <button class="nav-item active" data-view="search" id="nav-search"><span class="nav-ic"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg></span> Search</button>
+          <button class="nav-item" data-view="recent" id="nav-recent"><span class="nav-ic"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg></span> Recently played</button>
+        </nav>
+
+        <div class="playlists-section">
+          <div class="section-head">
+            <span>Playlists</span>
+            <button id="btn-new-playlist" class="icon-btn" title="New playlist"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg></button>
+          </div>
+          <div id="playlist-list" class="playlist-list" aria-label="Playlists"></div>
+          <p class="hint">Drag a track here to add it to a playlist.</p>
+        </div>
+      </aside>
+
+      <main class="content">
+        <div class="content-head">
+          <div>
+            <h1 id="view-title">Search</h1>
+            <span id="view-count" class="muted"></span>
+          </div>
+          <div id="view-actions" class="view-actions hide">
+            <button id="btn-play-view" class="btn primary"><svg class="icon" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg> Play all</button>
+            <button id="btn-shuffle-view" class="btn"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><polyline points="21 16 21 21 16 21"></polyline><line x1="15" y1="15" x2="21" y2="21"></line><line x1="4" y1="4" x2="9" y2="9"></line></svg> Shuffle</button>
+          </div>
+        </div>
+
+        <div id="track-table" class="track-table" role="list"></div>
+        <div id="empty-state" class="empty-state hide">
+          <p id="empty-state-text">Search for something above to get started.</p>
+        </div>
+      </main>
+
+      <aside id="queue-drawer" class="queue-drawer hide">
+        <div class="drawer-head">
+          <span>Up next</span>
+          <button id="btn-close-queue" class="icon-btn" aria-label="Close queue"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+        </div>
+        <div id="queue-list" class="queue-list"></div>
+      </aside>
+    </div>
+
+    <footer class="player-bar">
+      <div class="pb-now">
+        <div id="video-panel" class="video-panel">
+          <div id="yt-player-mount"></div>
+          <button id="video-expand" class="video-expand" title="Expand/collapse video" aria-label="Expand video"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg></button>
+        </div>
+        <div class="pb-meta">
+          <div id="track-title" class="pb-title">Nothing playing</div>
+          <div id="track-artist" class="pb-artist">Search above to start</div>
+        </div>
+      </div>
+
+      <div class="pb-center">
+        <div class="pb-controls">
+          <button id="btn-shuffle" class="icon-btn" title="Shuffle"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><polyline points="21 16 21 21 16 21"></polyline><line x1="15" y1="15" x2="21" y2="21"></line><line x1="4" y1="4" x2="9" y2="9"></line></svg></button>
+          <button id="prev" class="icon-btn" title="Previous" aria-label="Previous"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="19 20 9 12 19 4 19 20"></polygon><line x1="5" y1="19" x2="5" y2="5"></line></svg></button>
+          <button id="play" class="btn primary round" title="Play/Pause" aria-label="Play/Pause"><svg class="icon" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 3 20 12 6 21 6 3"></polygon></svg></button>
+          <button id="next" class="icon-btn" title="Next" aria-label="Next"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></svg></button>
+          <button id="btn-repeat" class="icon-btn" title="Repeat"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg></button>
+        </div>
+        <div class="progress">
+          <span id="current" class="time">0:00</span>
+          <input id="seek" type="range" min="0" max="100" value="0" aria-label="Seek" />
+          <span id="duration" class="time">0:00</span>
+        </div>
+      </div>
+
+      <div class="pb-right">
+        <button id="btn-queue" class="icon-btn" title="Queue"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg> Queue</button>
+        <label class="volume">
+          <span><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg></span>
+          <input id="volume" type="range" min="0" max="100" step="1" value="80" aria-label="Volume" />
+        </label>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Import playlist modal -->
+  <div id="import-modal" class="modal-backdrop hide">
+    <div class="modal">
+      <div class="modal-head"><span>Import a YouTube playlist</span><button class="icon-btn" id="import-close" aria-label="Close"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button></div>
+      <p class="muted small">Paste a YouTube playlist link. Every video in it (up to 500) becomes a new Synq playlist.</p>
+      <input id="import-url" class="text-input" placeholder="https://www.youtube.com/playlist?list=..." />
+      <div id="import-status" class="muted small"></div>
+      <div class="modal-actions">
+        <button id="import-cancel" class="btn">Cancel</button>
+        <button id="import-ok" class="btn primary">Import</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generic confirm modal -->
+  <div id="confirm-modal" class="modal-backdrop hide">
+    <div class="modal small">
+      <p id="confirm-text">Are you sure?</p>
+      <div class="modal-actions">
+        <button id="confirm-cancel" class="btn">Cancel</button>
+        <button id="confirm-ok" class="btn danger">Remove</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- New playlist modal -->
+  <div id="newpl-modal" class="modal-backdrop hide">
+    <div class="modal small">
+      <p>New playlist</p>
+      <input id="newpl-name" class="text-input" placeholder="Playlist name" maxlength="60" />
+      <div class="modal-actions">
+        <button id="newpl-cancel" class="btn">Cancel</button>
+        <button id="newpl-ok" class="btn primary">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rename playlist modal -->
+  <div id="renamepl-modal" class="modal-backdrop hide">
+    <div class="modal small">
+      <p>Rename playlist</p>
+      <input id="renamepl-name" class="text-input" placeholder="Playlist name" maxlength="60" />
+      <div class="modal-actions">
+        <button id="renamepl-cancel" class="btn">Cancel</button>
+        <button id="renamepl-ok" class="btn primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Track context menu -->
+  <div id="track-menu" class="context-menu hide">
+    <button data-action="play-next">Play next</button>
+    <button data-action="add-queue">Add to queue</button>
+    <div class="submenu-label">Add to playlist</div>
+    <div id="menu-playlists" class="menu-playlists"></div>
+    <hr/>
+    <button data-action="remove-from-playlist" class="danger-text hide">Remove from this playlist</button>
+  </div>
+
+  <div id="toast" class="toast hide"></div>
+
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

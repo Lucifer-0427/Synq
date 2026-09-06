@@ -1,0 +1,13 @@
+node_modules/
+.env
+.vercel
+tracks-cache.json
+playlists.json
+playlists.local-backup.json
+
+# Leftover from the old local-file version of Synq / unrelated files that
+# ended up in this project folder — not part of the app, shouldn't go to GitHub.
+/media/
+/*.jpeg
+/*.jpg
+/*.png

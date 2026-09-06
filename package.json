@@ -1,0 +1,13 @@
+{
+  "name": "synq",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Synq — a YouTube-powered music player: search, playlists, queue, shuffle/repeat, drag-and-drop.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0"
+  }
+}
