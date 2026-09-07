@@ -48,13 +48,20 @@ const PUBLIC_DIR = path.join(ROOT, "public");
 const DB_PATH = path.join(ROOT, "db.local.json");
 
 // ---------- Redis (optional — only used when configured) ----------
+// Different ways of connecting an Upstash database on Vercel land under
+// different env var names: the newer "Upstash for Redis" native integration
+// uses UPSTASH_REDIS_REST_URL/TOKEN, while databases connected through (or
+// migrated from) the old Vercel KV integration use KV_REST_API_URL/TOKEN
+// instead. Check both so either naming works.
 let redis = null;
-if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+if (REDIS_URL && REDIS_TOKEN) {
   try {
     const { Redis } = require("@upstash/redis");
-    redis = Redis.fromEnv();
+    redis = new Redis({ url: REDIS_URL, token: REDIS_TOKEN });
   } catch {
-    console.warn("UPSTASH_REDIS_REST_URL is set but the @upstash/redis package isn't installed — run `npm install`. Falling back to local file storage for now.");
+    console.warn("Redis env vars are set but the @upstash/redis package isn't installed — run `npm install`. Falling back to local file storage for now.");
   }
 }
 
