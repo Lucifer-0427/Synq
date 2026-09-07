@@ -126,6 +126,45 @@ function newId() {
   return "pl_" + Math.random().toString(36).slice(2, 10);
 }
 
+// ---------- Demo account ----------
+// Seeded automatically (idempotent — safe to run on every cold start) so
+// anyone (recruiters included) can explore Synq without signing up. The
+// credentials are intentionally not secret — they're shown right on the
+// login screen — so this account should never be used for anything real.
+const DEMO_EMAIL = "demo@synq.app";
+const DEMO_PASSWORD = "SynqDemo123";
+const DEMO_STARTER_TRACKS = [
+  { id: "dQw4w9WgXcQ", title: "Never Gonna Give You Up", artist: "Rick Astley" },
+  { id: "fJ9rUzIMcZQ", title: "Bohemian Rhapsody", artist: "Queen" },
+  { id: "JGwWNGJdvx8", title: "Shape of You", artist: "Ed Sheeran" },
+];
+let demoSeedPromise = null;
+async function ensureDemoUser() {
+  const users = await loadUsers();
+  let user = users[DEMO_EMAIL];
+  if (!user) {
+    const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 10);
+    user = { id: "demo-user", name: "Demo", email: DEMO_EMAIL, passwordHash, createdAt: Date.now(), isDemo: true };
+    users[DEMO_EMAIL] = user;
+    await saveUsers(users);
+  }
+  const data = await loadPlaylists(user.id);
+  if (!data.playlists.length) {
+    await upsertCache(DEMO_STARTER_TRACKS);
+    data.playlists.push({ id: newId(), name: "Demo Favorites", tracks: DEMO_STARTER_TRACKS.map((t) => t.id) });
+    await savePlaylists(user.id, data);
+  }
+}
+function ensureDemoUserOnce() {
+  if (!demoSeedPromise) {
+    demoSeedPromise = ensureDemoUser().catch((e) => {
+      console.warn("Couldn't seed demo account:", e.message);
+      demoSeedPromise = null; // let the next request try again
+    });
+  }
+  return demoSeedPromise;
+}
+
 // ---------- Auth helpers ----------
 function getJwtSecret() {
   if (!JWT_SECRET) {
@@ -180,6 +219,7 @@ app.get("/api/auth/me", (req, res) => {
 app.post("/api/auth/signup", async (req, res) => {
   try {
     getJwtSecret(); // fail fast with a clear message if accounts aren't configured
+    await ensureDemoUserOnce(); // make sure demo@synq.app is reserved before anyone else can claim it
     const name = String(req.body?.name || "").trim();
     const email = String(req.body?.email || "").trim().toLowerCase();
     const password = String(req.body?.password || "");
@@ -206,6 +246,7 @@ app.post("/api/auth/signup", async (req, res) => {
 app.post("/api/auth/login", async (req, res) => {
   try {
     getJwtSecret();
+    await ensureDemoUserOnce();
     const email = String(req.body?.email || "").trim().toLowerCase();
     const password = String(req.body?.password || "");
     const users = await loadUsers();
@@ -650,6 +691,7 @@ function lanAddresses() {
 // plain http LAN IP won't actually play videos, only a tunnel or a real
 // deployment will).
 if (require.main === module) {
+  if (JWT_SECRET) ensureDemoUserOnce();
   app.listen(PORT, () => {
     console.log(`Synq running on http://localhost:${PORT}`);
     const ips = lanAddresses();

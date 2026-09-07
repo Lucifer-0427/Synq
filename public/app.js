@@ -1125,6 +1125,26 @@ function wireAuthScreen() {
   $("auth-tab-login").addEventListener("click", () => setMode("login"));
   $("auth-tab-signup").addEventListener("click", () => setMode("signup"));
 
+  $("auth-demo-btn").addEventListener("click", async () => {
+    setMode("login");
+    errEl.classList.add("hide");
+    const btn = $("auth-demo-btn");
+    btn.disabled = true;
+    try {
+      const d = await api("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ email: "demo@synq.app", password: "SynqDemo123" }),
+      });
+      $("auth-form").reset();
+      await enterApp(d.user);
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove("hide");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
   $("auth-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const email = $("auth-email").value.trim();
