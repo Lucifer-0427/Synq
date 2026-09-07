@@ -66,10 +66,12 @@ function onPlayerStateChange(e) {
   if (e.data === YT.PlayerState.ENDED) next();
   else if (e.data === YT.PlayerState.PLAYING) {
     $("play").innerHTML = ICONS.pause;
+    document.body.classList.add("is-playing"); // drives the decorative equalizer bars on the active track row
     requestWakeLock();
     setMediaSessionState("playing");
   } else if (e.data === YT.PlayerState.PAUSED) {
     $("play").innerHTML = ICONS.play;
+    document.body.classList.remove("is-playing");
     releaseWakeLock();
     setMediaSessionState("paused");
   }
@@ -300,7 +302,10 @@ function selectHome() {
 function homeCardHtml(id, title, sub, thumb) {
   return `
     <div class="home-card" data-id="${id}">
-      ${thumb ? `<img class="home-card-art" src="${thumb}" alt="" loading="lazy" />` : `<div class="home-card-art">${ICONS.music}</div>`}
+      <div class="home-card-art-wrap">
+        ${thumb ? `<img class="home-card-art" src="${thumb}" alt="" loading="lazy" />` : `<div class="home-card-art">${ICONS.music}</div>`}
+        <span class="home-card-play" aria-hidden="true">${ICONS.play || '▶'}</span>
+      </div>
       <div class="home-card-title">${escapeHtml(title)}</div>
       <div class="home-card-sub">${escapeHtml(sub)}</div>
     </div>
@@ -495,9 +500,14 @@ async function addTrackToPlaylist(pid, trackId) {
 }
 
 function trackArtHtml(t) {
-  return t.thumbnail
+  const art = t.thumbnail
     ? `<img class="track-art" src="${t.thumbnail}" alt="" loading="lazy" />`
     : `<div class="track-art placeholder">${ICONS.music}</div>`;
+  // The eq badge itself is always in the DOM but only shown by CSS on
+  // .track.active — that way it stays correctly positioned as the "active"
+  // class moves between rows (e.g. on next/prev) without a full re-render,
+  // and only animates while body.is-playing reflects the real player state.
+  return `<div class="track-art-wrap">${art}<span class="track-eq" aria-hidden="true"><i></i><i></i><i></i></span></div>`;
 }
 
 function renderTracks() {
