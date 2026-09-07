@@ -102,6 +102,11 @@
             <div id="home-recent" class="home-recent-row"></div>
           </section>
           <section class="home-section">
+            <div class="home-eyebrow">Live from your friend group</div>
+            <div class="home-section-head">Friends are playing</div>
+            <div id="home-friends" class="home-recent-row"></div>
+          </section>
+          <section class="home-section">
             <div class="home-eyebrow">Picked for you</div>
             <div class="home-section-head">Suggested for you</div>
             <div id="home-suggested" class="home-recent-row"></div>
@@ -126,10 +131,11 @@
 
       <aside id="queue-drawer" class="queue-drawer hide">
         <div class="drawer-head">
-          <span>Up next</span>
-          <button id="btn-close-queue" class="icon-btn" aria-label="Close queue"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
+          <span id="drawer-title">Up next</span>
+          <button id="btn-close-queue" class="icon-btn" aria-label="Close panel"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>
         </div>
         <div id="queue-list" class="queue-list"></div>
+        <div id="lyrics-list" class="lyrics-list hide"></div>
       </aside>
     </div>
 
@@ -161,6 +167,8 @@
       </div>
 
       <div class="pb-right">
+        <button id="btn-lyrics" class="icon-btn" title="Lyrics"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg> Lyrics</button>
+        <button id="btn-pip" class="icon-btn hide" title="Picture-in-picture"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"></rect><rect x="12" y="12" width="8" height="6" rx="1" fill="currentColor" stroke="none"></rect></svg></button>
         <button id="btn-queue" class="icon-btn" title="Queue"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"></line><line x1="8" y1="12" x2="21" y2="12"></line><line x1="8" y1="18" x2="21" y2="18"></line><line x1="3" y1="6" x2="3.01" y2="6"></line><line x1="3" y1="12" x2="3.01" y2="12"></line><line x1="3" y1="18" x2="3.01" y2="18"></line></svg> Queue</button>
         <label class="volume">
           <span><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg></span>
@@ -194,12 +202,18 @@
         <div class="settings-row"><span>Signed in as</span><span id="settings-user" class="badge">…</span></div>
         <div class="settings-row"><span>YouTube API key</span><span id="settings-apikey" class="badge">Checking…</span></div>
         <div class="settings-row"><span>Playlist storage</span><span id="settings-storage" class="badge">Checking…</span></div>
+        <div class="settings-row">
+          <span>Share my activity with friends</span>
+          <label class="switch"><input type="checkbox" id="settings-activity-toggle" /><span class="switch-track"></span></label>
+        </div>
       </div>
+      <p class="muted small" style="margin-top:-6px;">When on, friends see your plays in their "Friends are playing" row on Home. Turn off any time — it only affects new plays.</p>
       <div class="modal-actions" style="justify-content:flex-start; flex-wrap:wrap;">
         <button id="settings-clear-recent" class="btn danger">Clear recently played</button>
         <button id="settings-logout" class="btn">Log out</button>
       </div>
       <p class="muted small">Synq searches, plays and caches metadata through YouTube's Data API — nothing is downloaded. Playlists are just saved lists of YouTube video ids.</p>
+      <p class="muted small"><strong>Keyboard shortcuts:</strong> Space play/pause · ←/→ prev/next · ↑/↓ volume · M mute · L lyrics · Q queue</p>
     </div>
   </div>
 

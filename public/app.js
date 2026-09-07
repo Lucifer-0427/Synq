@@ -173,6 +173,7 @@ function startProgressTimer() {
       $("current").textContent = fmt(cur);
       $("duration").textContent = fmt(dur);
     }
+    updateLyricsHighlight(cur || 0);
   }, 500);
 }
 
@@ -299,10 +300,11 @@ function selectHome() {
   renderHome();
 }
 
-function homeCardHtml(id, title, sub, thumb) {
+function homeCardHtml(id, title, sub, thumb, friendName) {
   return `
     <div class="home-card" data-id="${id}">
       <div class="home-card-art-wrap">
+        ${friendName ? `<span class="home-card-friend">${escapeHtml(friendName)}</span>` : ""}
         ${thumb ? `<img class="home-card-art" src="${thumb}" alt="" loading="lazy" />` : `<div class="home-card-art">${ICONS.music}</div>`}
         <span class="home-card-play" aria-hidden="true">${ICONS.play || '▶'}</span>
       </div>
@@ -347,6 +349,31 @@ function renderHome() {
   });
 
   loadSuggestions(); // fire-and-forget — pops in once the server responds
+  loadFriendActivity();
+}
+
+async function loadFriendActivity() {
+  const el = $("home-friends");
+  el.innerHTML = `<div class="home-empty-hint">Loading…</div>`;
+  try {
+    const d = await api("/api/feed");
+    const activity = d.activity || [];
+    if (!activity.length) {
+      el.innerHTML = `<div class="home-empty-hint">No friend activity yet — once your friends sign up and play something, it shows up here.</div>`;
+      return;
+    }
+    activity.forEach((a) => state.tracksById.set(a.trackId, { id: a.trackId, title: a.title, artist: a.artist, thumbnail: a.thumbnail, duration: a.duration }));
+    el.innerHTML = activity.map((a) => homeCardHtml(a.trackId, a.title, a.artist, a.thumbnail, a.name)).join("");
+    el.querySelectorAll(".home-card").forEach((card, i) => {
+      card.addEventListener("click", () => {
+        const a = activity[i];
+        const list = activity.map((x) => state.tracksById.get(x.trackId));
+        buildQueueFrom(list, a.trackId);
+      });
+    });
+  } catch {
+    el.innerHTML = `<div class="home-empty-hint">Couldn't load friend activity right now.</div>`;
+  }
 }
 
 async function loadSuggestions() {
@@ -654,12 +681,127 @@ function renderQueue() {
   });
 }
 
+// ===================== Shared drawer (queue / lyrics) =====================
+// The queue drawer and lyrics panel share one DOM shell — only one of
+// #queue-list / #lyrics-list is visible at a time, keyed by data-mode.
+function openDrawer(mode) {
+  const drawer = $("queue-drawer");
+  const body = document.querySelector(".body");
+  drawer.dataset.mode = mode;
+  drawer.classList.remove("hide");
+  body.classList.add("with-queue");
+  $("btn-queue").classList.toggle("on", mode === "queue");
+  $("btn-lyrics").classList.toggle("on", mode === "lyrics");
+  if (mode === "lyrics") {
+    $("drawer-title").textContent = "Lyrics";
+    $("queue-list").classList.add("hide");
+    $("lyrics-list").classList.remove("hide");
+    loadLyricsForCurrent();
+  } else {
+    $("drawer-title").textContent = "Up next";
+    $("lyrics-list").classList.add("hide");
+    $("queue-list").classList.remove("hide");
+    renderQueue();
+  }
+}
+
+function closeDrawer() {
+  $("queue-drawer").classList.add("hide");
+  document.querySelector(".body").classList.remove("with-queue");
+  $("btn-queue").classList.remove("on");
+  $("btn-lyrics").classList.remove("on");
+}
+
+function toggleDrawer(mode) {
+  const drawer = $("queue-drawer");
+  const isOpen = !drawer.classList.contains("hide");
+  if (isOpen && drawer.dataset.mode === mode) { closeDrawer(); return; }
+  openDrawer(mode);
+}
+
+// ===================== Lyrics =====================
+// state.lyrics tracks what's currently loaded so the 500ms progress tick
+// (updateLyricsHighlight) and a track change (loadLyricsForCurrent) don't
+// step on each other or refetch needlessly.
+state.lyrics = { trackId: null, lines: null, plain: null, activeIndex: -1 };
+
+async function loadLyricsForCurrent() {
+  const id = state.queue[state.queuePos];
+  const t = id && state.tracksById.get(id);
+  const el = $("lyrics-list");
+  if (!t) {
+    state.lyrics = { trackId: null, lines: null, plain: null, activeIndex: -1 };
+    el.innerHTML = `<div class="lyrics-empty">Nothing playing yet.</div>`;
+    return;
+  }
+  if (state.lyrics.trackId === t.id && (state.lyrics.lines || state.lyrics.plain)) {
+    renderLyricsLines();
+    return;
+  }
+  state.lyrics = { trackId: t.id, lines: null, plain: null, activeIndex: -1 };
+  el.innerHTML = `<div class="lyrics-empty">Loading lyrics…</div>`;
+  try {
+    const data = await api(`/api/lyrics/${encodeURIComponent(t.id)}`);
+    if (state.queue[state.queuePos] !== id) return; // track changed mid-fetch
+    state.lyrics.lines = data.lines || null;
+    state.lyrics.plain = data.plain || null;
+    renderLyricsLines();
+  } catch {
+    if (state.queue[state.queuePos] !== id) return;
+    el.innerHTML = `<div class="lyrics-empty">Couldn't load lyrics for this track.</div>`;
+  }
+}
+
+function renderLyricsLines() {
+  const el = $("lyrics-list");
+  const { lines, plain } = state.lyrics;
+  if (lines && lines.length) {
+    el.innerHTML = lines
+      .map((l, i) => `<div class="lyrics-line" data-idx="${i}">${escapeHtml(l.text)}</div>`)
+      .join("");
+    el.querySelectorAll(".lyrics-line").forEach((row) => {
+      row.addEventListener("click", () => {
+        const idx = Number(row.dataset.idx);
+        const line = state.lyrics.lines[idx];
+        if (line && ytPlayer && typeof ytPlayer.seekTo === "function") ytPlayer.seekTo(line.time, true);
+      });
+    });
+  } else if (plain) {
+    el.innerHTML = `<div class="lyrics-empty" style="white-space:pre-line;">${escapeHtml(plain)}</div>`;
+  } else {
+    el.innerHTML = `<div class="lyrics-empty">No lyrics found for this track.</div>`;
+  }
+}
+
+function updateLyricsHighlight(cur) {
+  const { lines } = state.lyrics;
+  if (!lines || !lines.length) return;
+  if ($("queue-drawer").classList.contains("hide") || $("queue-drawer").dataset.mode !== "lyrics") return;
+  let idx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].time <= cur) idx = i; else break;
+  }
+  if (idx === state.lyrics.activeIndex) return;
+  state.lyrics.activeIndex = idx;
+  const el = $("lyrics-list");
+  el.querySelectorAll(".lyrics-line.active").forEach((r) => r.classList.remove("active"));
+  if (idx >= 0) {
+    const row = el.querySelector(`.lyrics-line[data-idx="${idx}"]`);
+    if (row) {
+      row.classList.add("active");
+      row.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }
+}
+
 function updateNowPlayingUI(t) {
   $("track-title").textContent = t ? t.title : "Nothing playing";
   $("track-artist").textContent = t ? t.artist : "Search above to start";
   document.querySelectorAll(".track").forEach((x) => x.classList.toggle("active", t && x.dataset.id === t.id));
   updateMediaSessionMetadata(t);
   setBackdrop(t && t.thumbnail);
+  const drawer = $("queue-drawer");
+  if (!drawer.classList.contains("hide") && drawer.dataset.mode === "lyrics") loadLyricsForCurrent();
 }
 
 // ===================== Ambient backdrop (Apple Music style glow) =====================
@@ -877,6 +1019,91 @@ function wireVideoPanel() {
   });
 }
 
+// ===================== Picture-in-Picture =====================
+// Real, OS-level PiP for the embedded YouTube iframe. The standard
+// requestPictureInPicture() only works on a <video> element, and the video
+// inside YouTube's iframe is cross-origin and unreachable from this page —
+// so the only path to genuine PiP here is Chromium's Document
+// Picture-in-Picture API, which opens a small always-on-top window we can
+// move real DOM into. It's Chrome-only and experimental, so the button is
+// feature-detected and stays hidden entirely everywhere else.
+let pipWindow = null;
+
+function wirePiP() {
+  const btn = $("btn-pip");
+  if (!("documentPictureInPicture" in window)) return; // leave it hidden (has .hide by default)
+  btn.classList.remove("hide");
+  btn.addEventListener("click", () => {
+    if (pipWindow) { pipWindow.close(); return; }
+    openPiP();
+  });
+}
+
+async function openPiP() {
+  const panel = $("video-panel");
+  if (!panel || !ytPlayer) { showToast("Play something first", true); return; }
+
+  let resumeAt = 0, wasPlaying = false;
+  try {
+    resumeAt = ytPlayer.getCurrentTime() || 0;
+    wasPlaying = ytPlayer.getPlayerState() === YT.PlayerState.PLAYING;
+  } catch { /* player not ready yet */ }
+
+  const homeParent = panel.parentElement;
+  const homeNext = panel.nextSibling;
+  const wasExpanded = panel.classList.contains("expanded");
+
+  try {
+    pipWindow = await documentPictureInPicture.requestWindow({ width: 420, height: 236 });
+  } catch {
+    pipWindow = null;
+    showToast("Picture-in-Picture isn't available right now", true);
+    return;
+  }
+
+  // Bring the page's CSS along so the moved player still looks right.
+  [...document.styleSheets].forEach((sheet) => {
+    try {
+      if (sheet.href) {
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = sheet.href;
+        pipWindow.document.head.appendChild(link);
+      } else if (sheet.cssRules) {
+        const style = document.createElement("style");
+        style.textContent = [...sheet.cssRules].map((r) => r.cssText).join("\n");
+        pipWindow.document.head.appendChild(style);
+      }
+    } catch { /* cross-origin stylesheet — skip, not essential */ }
+  });
+  pipWindow.document.body.style.margin = "0";
+  pipWindow.document.body.style.background = "#000";
+
+  panel.classList.remove("expanded");
+  panel.classList.add("pip-active");
+  pipWindow.document.body.appendChild(panel);
+
+  // Re-parenting the iframe into another document reloads its browsing
+  // context (YouTube resets to the start), so once it's settled, seek back
+  // to where playback actually was and resume if it had been playing.
+  const resume = () => {
+    try {
+      if (resumeAt > 1) ytPlayer.seekTo(resumeAt, true);
+      if (wasPlaying) ytPlayer.playVideo();
+    } catch { /* ignore — best effort */ }
+  };
+  setTimeout(resume, 900);
+
+  pipWindow.addEventListener("pagehide", () => {
+    pipWindow = null;
+    panel.classList.remove("pip-active");
+    if (wasExpanded) panel.classList.add("expanded");
+    if (homeNext && homeNext.parentElement === homeParent) homeParent.insertBefore(panel, homeNext);
+    else homeParent.appendChild(panel);
+    setTimeout(resume, 400);
+  }, { once: true });
+}
+
 // ===================== Mobile: library sheet =====================
 function openMobileSidebar() { $("sidebar").classList.add("mobile-open"); }
 function closeMobileSidebar() { $("sidebar").classList.remove("mobile-open"); }
@@ -905,6 +1132,7 @@ async function populateSettings() {
   const storageBadge = $("settings-storage");
   const userBadge = $("settings-user");
   userBadge.textContent = state.user ? (state.user.name || state.user.email) : "—";
+  $("settings-activity-toggle").checked = !!(state.user && state.user.activityEnabled !== false);
   apikeyBadge.textContent = "Checking…"; apikeyBadge.className = "badge";
   storageBadge.textContent = "Checking…"; storageBadge.className = "badge";
   try {
@@ -931,6 +1159,17 @@ function wireSettingsModal() {
       if (state.viewKind === "home") renderHome();
     } catch (e) {
       showToast(e.message, true);
+    }
+  });
+  $("settings-activity-toggle").addEventListener("change", async (e) => {
+    const enabled = e.target.checked;
+    try {
+      await api("/api/settings/activity", { method: "POST", body: JSON.stringify({ enabled }) });
+      if (state.user) state.user.activityEnabled = enabled;
+      showToast(enabled ? "Friends can see your activity again" : "Your activity is now private");
+    } catch (err) {
+      e.target.checked = !enabled; // revert on failure
+      showToast(err.message, true);
     }
   });
   $("settings-logout").addEventListener("click", async () => {
@@ -991,17 +1230,9 @@ function wireTopLevel() {
   $("nav-search").addEventListener("click", () => { selectSearch(); closeMobileSidebar(); });
   $("nav-recent").addEventListener("click", () => { selectRecent(); closeMobileSidebar(); });
 
-  $("btn-queue").addEventListener("click", () => {
-    const drawer = $("queue-drawer");
-    const body = document.querySelector(".body");
-    const showing = drawer.classList.toggle("hide");
-    body.classList.toggle("with-queue", !showing);
-    if (!showing) renderQueue();
-  });
-  $("btn-close-queue").addEventListener("click", () => {
-    $("queue-drawer").classList.add("hide");
-    document.querySelector(".body").classList.remove("with-queue");
-  });
+  $("btn-queue").addEventListener("click", () => toggleDrawer("queue"));
+  $("btn-close-queue").addEventListener("click", closeDrawer);
+  $("btn-lyrics").addEventListener("click", () => toggleDrawer("lyrics"));
 
   $("btn-play-view").addEventListener("click", () => { if (state.view[0]) buildQueueFrom(state.view, state.view[0].id); });
   $("btn-shuffle-view").addEventListener("click", shufflePlayView);
@@ -1058,6 +1289,29 @@ function wirePlaylistModals() {
   $("confirm-ok").addEventListener("click", () => closeConfirm(true));
 }
 
+// ===================== Volume helpers (shared by slider + shortcuts) =====================
+let volumeBeforeMute = null;
+function adjustVolume(delta) {
+  const volume = $("volume");
+  const next = Math.max(0, Math.min(100, Number(volume.value) + delta));
+  volume.value = next;
+  if (ytPlayer) ytPlayer.setVolume(next);
+  if (next > 0) volumeBeforeMute = null;
+}
+function toggleMute() {
+  const volume = $("volume");
+  if (Number(volume.value) > 0) {
+    volumeBeforeMute = Number(volume.value);
+    volume.value = 0;
+    if (ytPlayer) ytPlayer.setVolume(0);
+  } else {
+    const restore = volumeBeforeMute || 80;
+    volume.value = restore;
+    if (ytPlayer) ytPlayer.setVolume(restore);
+    volumeBeforeMute = null;
+  }
+}
+
 function wirePlayerControls() {
   const seek = $("seek"), volume = $("volume");
   seek.addEventListener("input", () => {
@@ -1082,6 +1336,11 @@ function wirePlayerControls() {
     if (ev.code === "Space") { ev.preventDefault(); $("play").click(); }
     if (ev.code === "ArrowRight") next();
     if (ev.code === "ArrowLeft") prev();
+    if (ev.code === "ArrowUp") { ev.preventDefault(); adjustVolume(5); }
+    if (ev.code === "ArrowDown") { ev.preventDefault(); adjustVolume(-5); }
+    if (ev.key === "m" || ev.key === "M") toggleMute();
+    if (ev.key === "l" || ev.key === "L") toggleDrawer("lyrics");
+    if (ev.key === "q" || ev.key === "Q") toggleDrawer("queue");
   });
 }
 
@@ -1184,6 +1443,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   wireTopLevel();
   wirePlaylistModals();
   wireVideoPanel();
+  wirePiP();
   wireMediaSession();
   wireMobileNav();
   wireSettingsModal();

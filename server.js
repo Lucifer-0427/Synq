@@ -105,6 +105,19 @@ async function dbSet(key, value) {
 // ---------- Users ----------
 async function loadUsers() { return dbGet("synq:users", {}); } // { [email]: user }
 async function saveUsers(users) { return dbSet("synq:users", users); }
+async function loadUserByEmail(email) {
+  const users = await loadUsers();
+  return users[email] || null;
+}
+
+// ---------- Friends activity feed ----------
+// A small, capped, shared list — "what your friends are playing" — fed
+// automatically whenever someone plays a track, unless they've opted out.
+// Deliberately simple: this is a friend-group app, not a public product, so
+// there's one shared feed rather than a follow graph.
+const FEED_MAX = 60;
+async function loadFeed() { return dbGet("synq:feed", []); }
+async function saveFeed(list) { return dbSet("synq:feed", list.slice(0, FEED_MAX)); }
 
 // ---------- Per-user playlists ----------
 async function loadPlaylists(uid) { return dbGet(`synq:playlists:${uid}`, { playlists: [] }); }
@@ -211,9 +224,15 @@ app.use((req, _res, next) => {
 });
 
 // ---------- Auth routes ----------
-app.get("/api/auth/me", (req, res) => {
-  const user = getUserFromReq(req);
-  res.json({ user: user ? { id: user.uid, name: user.name, email: user.email } : null });
+app.get("/api/auth/me", async (req, res) => {
+  const claims = getUserFromReq(req);
+  if (!claims) return res.json({ user: null });
+  // activityEnabled can change mid-session (via /api/settings/activity) and
+  // isn't in the JWT, so it's read fresh from the user record every time —
+  // cheap (one dbGet) and keeps the settings toggle honest.
+  const full = await loadUserByEmail(claims.email);
+  const activityEnabled = full ? full.activityEnabled !== false : true;
+  res.json({ user: { id: claims.uid, name: claims.name, email: claims.email, activityEnabled } });
 });
 
 app.post("/api/auth/signup", async (req, res) => {
@@ -231,12 +250,12 @@ app.post("/api/auth/signup", async (req, res) => {
     if (users[email]) return res.status(409).json({ error: "An account with that email already exists" });
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const user = { id: crypto.randomUUID(), name, email, passwordHash, createdAt: Date.now() };
+    const user = { id: crypto.randomUUID(), name, email, passwordHash, createdAt: Date.now(), activityEnabled: true };
     users[email] = user;
     await saveUsers(users);
 
     issueSession(res, user);
-    res.status(201).json({ user: { id: user.id, name: user.name, email: user.email } });
+    res.status(201).json({ user: { id: user.id, name: user.name, email: user.email, activityEnabled: true } });
   } catch (e) {
     console.error(e);
     res.status(e.status || 500).json({ error: e.message || "Sign up failed" });
@@ -255,7 +274,7 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(401).json({ error: "Incorrect email or password" });
     }
     issueSession(res, user);
-    res.json({ user: { id: user.id, name: user.name, email: user.email } });
+    res.json({ user: { id: user.id, name: user.name, email: user.email, activityEnabled: user.activityEnabled !== false } });
   } catch (e) {
     console.error(e);
     res.status(e.status || 500).json({ error: e.message || "Log in failed" });
@@ -265,6 +284,21 @@ app.post("/api/auth/login", async (req, res) => {
 app.post("/api/auth/logout", (_req, res) => {
   res.clearCookie(COOKIE_NAME, { path: "/" });
   res.json({ ok: true });
+});
+
+app.post("/api/settings/activity", authMiddleware, async (req, res) => {
+  try {
+    const enabled = !!req.body?.enabled;
+    const users = await loadUsers();
+    const user = users[req.user.email];
+    if (!user) return res.status(404).json({ error: "Account not found" });
+    user.activityEnabled = enabled;
+    await saveUsers(users);
+    res.json({ ok: true, activityEnabled: enabled });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Failed to update setting" });
+  }
 });
 
 // ---------- YouTube helpers ----------
@@ -598,10 +632,40 @@ app.post("/api/recent", authMiddleware, async (req, res) => {
     list.unshift({ id: t.id, title: t.title, artist: t.artist, thumbnail: t.thumbnail, duration: t.duration });
     list = list.slice(0, 40);
     await saveRecent(req.user.uid, list);
+
+    // Also drop this into the shared friends feed, unless the user opted out
+    // in Settings. Best-effort — a feed hiccup shouldn't fail the main save.
+    try {
+      const user = await loadUserByEmail(req.user.email);
+      if (!user || user.activityEnabled !== false) {
+        const feed = await loadFeed();
+        const entry = {
+          uid: req.user.uid, name: req.user.name,
+          trackId: t.id, title: t.title, artist: t.artist, thumbnail: t.thumbnail, duration: t.duration,
+          playedAt: Date.now(),
+        };
+        await saveFeed([entry, ...feed.filter((f) => !(f.uid === entry.uid && f.trackId === entry.trackId))]);
+      }
+    } catch (e) {
+      console.warn("Couldn't update friends feed:", e.message);
+    }
+
     res.json({ ok: true });
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: "Failed to save recently played" });
+  }
+});
+
+// ---------- Friends activity feed ----------
+app.get("/api/feed", authMiddleware, async (req, res) => {
+  try {
+    const feed = await loadFeed();
+    const friendsOnly = feed.filter((f) => f.uid !== req.user.uid).slice(0, 20);
+    res.json({ activity: friendsOnly });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Failed to load friends activity" });
   }
 });
 
@@ -648,6 +712,87 @@ app.get("/api/recommendations", authMiddleware, async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(e.status || 500).json({ error: e.message || "Couldn't load suggestions" });
+  }
+});
+
+// ---------- Lyrics (real synced lyrics via lrclib.net's free, keyless API) ----------
+// lrclib.net asks integrations to send a descriptive User-Agent; this is
+// the only "extra" header this app sends anywhere.
+const LRCLIB_UA = "Synq/2.0 (+https://synq-sage-two.vercel.app)";
+
+function parseLRC(text) {
+  // Turns "[00:12.34]Some line" into [{ time: 12.34, text: "Some line" }, ...],
+  // skipping metadata tags like [ar:], [ti:], [al:] and blank lines.
+  const lines = [];
+  for (const raw of String(text || "").split("\n")) {
+    const m = /^\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\](.*)$/.exec(raw.trim());
+    if (!m) continue;
+    const min = parseInt(m[1], 10);
+    const sec = parseInt(m[2], 10);
+    const frac = m[3] ? parseFloat(`0.${m[3]}`) : 0;
+    const text = m[4].trim();
+    if (!text) continue;
+    lines.push({ time: min * 60 + sec + frac, text });
+  }
+  return lines.sort((a, b) => a.time - b.time);
+}
+
+async function fetchLyrics(title, artist, duration) {
+  const headers = { "User-Agent": LRCLIB_UA };
+  // Exact-match lookup first (lrclib's intended fast path).
+  try {
+    const params = new URLSearchParams({ track_name: title, artist_name: artist || "" });
+    if (duration) params.set("duration", String(Math.round(duration)));
+    const res = await fetch(`https://lrclib.net/api/get?${params}`, { headers });
+    if (res.ok) {
+      const data = await res.json();
+      if (data?.syncedLyrics) return { lines: parseLRC(data.syncedLyrics), plain: null };
+      if (data?.plainLyrics) return { lines: null, plain: data.plainLyrics };
+    }
+  } catch { /* fall through to search */ }
+
+  // Fuzzy search fallback for when the exact match misses (title has extra
+  // "(Official Video)"-style noise, artist name mismatch, etc.).
+  try {
+    const q = new URLSearchParams({ q: `${title} ${artist || ""}`.trim() });
+    const res = await fetch(`https://lrclib.net/api/search?${q}`, { headers });
+    if (res.ok) {
+      const results = await res.json();
+      const withSync = (results || []).find((r) => r.syncedLyrics);
+      if (withSync) return { lines: parseLRC(withSync.syncedLyrics), plain: null };
+      const withPlain = (results || []).find((r) => r.plainLyrics);
+      if (withPlain) return { lines: null, plain: withPlain.plainLyrics };
+    }
+  } catch { /* no lyrics available */ }
+
+  return null;
+}
+
+app.get("/api/lyrics/:id", authMiddleware, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const cacheKey = `synq:lyrics:${id}`;
+    const cached = await dbGet(cacheKey, null);
+    if (cached) return res.json(cached);
+
+    const cache = await loadCache();
+    const track = cache[id];
+    if (!track) return res.status(404).json({ error: "Unknown track — search for it first" });
+
+    // YouTube titles are messy for lyrics matching ("Song - Artist (Official
+    // Music Video)"), so strip the common noise before asking lrclib.
+    const cleanTitle = track.title
+      .replace(/\[[^\]]*\]|\([^)]*(official|video|audio|lyric|remaster|hd|4k)[^)]*\)/gi, "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+
+    const result = await fetchLyrics(cleanTitle || track.title, track.artist, track.duration);
+    const payload = result || { lines: null, plain: null, notFound: true };
+    await dbSet(cacheKey, payload); // cache misses too, so a bad match doesn't re-hit lrclib every play
+    res.json(payload);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Couldn't load lyrics" });
   }
 });
 
